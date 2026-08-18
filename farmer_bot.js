@@ -23,12 +23,20 @@ bot.loadPlugin(collectBlock);
 let mcData;
 let isGiving = false;
 
-bot.on('login', () => console.log('✅ Bot connecté au serveur !'));
+bot.on('login', () => console.log('✅ Manus_Farmer connecté !'));
 
 bot.on('spawn', async () => {
-    console.log('🚀 Bot apparu dans le monde.');
+    console.log('🚀 Manus_Farmer est dans le monde.');
     mcData = mcDataLoader(bot.version);
-    bot.chat("Bonjour ! Je commence à farmer du bois. Dites 'donne' pour que je vous apporte ma récolte.");
+    
+    // Configuration des mouvements pour sauter et franchir les obstacles
+    const movements = new Movements(bot, mcData);
+    movements.allowSprinting = true;
+    movements.allowParkour = true;
+    movements.canDig = false; // Ne casse pas le sol pour avancer, contourne ou saute
+    bot.pathfinder.setMovements(movements);
+
+    bot.chat("Bonjour ! Je suis Manus_Farmer. Je farme du bois. Dites 'donne' pour récupérer ma récolte.");
     farmLoop();
 });
 
@@ -42,21 +50,15 @@ bot.on('chat', async (username, message) => {
         const player = bot.players[username];
         if (player && player.entity) {
             try {
-                const movements = new Movements(bot, mcData);
-                bot.pathfinder.setMovements(movements);
                 await bot.pathfinder.goto(new goals.GoalFollow(player.entity, 2));
-                
-                // Jeter tout le bois
                 const logs = bot.inventory.items().filter(item => item.name.includes('log'));
                 for (const item of logs) {
                     await bot.tossStack(item);
                 }
                 bot.chat("Voilà ton bois ! Je retourne au travail.");
             } catch (err) {
-                bot.chat("Désolé, je n'arrive pas à t'atteindre.");
+                bot.chat("Oups, je n'ai pas pu t'atteindre.");
             }
-        } else {
-            bot.chat("Je ne vous vois pas ! Approchez-vous.");
         }
         isGiving = false;
         farmLoop();
@@ -67,9 +69,6 @@ async function farmLoop() {
     if (isGiving) return;
 
     try {
-        const movements = new Movements(bot, mcData);
-        bot.pathfinder.setMovements(movements);
-
         const logBlockIds = mcData.blocksArray.filter(b => b.name.includes('_log')).map(b => b.id);
         const tree = bot.findBlock({
             matching: logBlockIds,
@@ -80,17 +79,18 @@ async function farmLoop() {
             try {
                 await bot.collectBlock.collect(tree);
             } catch (err) {
-                console.log('Erreur récolte arbre, recherche suivante...');
+                console.log('Erreur de récolte, tentative suivante...');
             }
         } else {
-            // Se déplacer pour trouver de nouveaux arbres
-            await bot.pathfinder.goto(new goals.GoalXZ(bot.entity.position.x + Math.random() * 40 - 20, bot.entity.position.z + Math.random() * 40 - 20));
+            // Se déplacer intelligemment en évitant les obstacles
+            const randomX = bot.entity.position.x + Math.floor(Math.random() * 50 - 25);
+            const randomZ = bot.entity.position.z + Math.floor(Math.random() * 50 - 25);
+            await bot.pathfinder.goto(new goals.GoalXZ(randomX, randomZ));
         }
         
-        // Continuer le farm
-        setTimeout(farmLoop, 1000);
+        setTimeout(farmLoop, 1500);
     } catch (e) {
-        console.error('Erreur dans la boucle de farm:', e);
+        console.error('Erreur farmLoop:', e);
         setTimeout(farmLoop, 5000);
     }
 }
