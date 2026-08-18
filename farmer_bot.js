@@ -22,48 +22,58 @@ bot.loadPlugin(collectBlock);
 
 let mcData;
 let isBusy = false;
+let lastPos = null;
+let stuckTicks = 0;
 
-bot.on('login', () => console.log('✅ Manus_Farmer prêt !'));
+bot.on('login', () => console.log('✅ Manus_Farmer (Version Pro) connecté !'));
 
 bot.on('spawn', async () => {
     mcData = mcDataLoader(bot.version);
     const movements = new Movements(bot, mcData);
     
-    // Configuration mouvement
+    // Configuration mouvement avancée (Style Mindcraft)
     movements.allowSprinting = true;
     movements.allowParkour = true;
     movements.canDig = true;
+    movements.liquidCost = 3;
+    movements.climbCost = 3;
     bot.pathfinder.setMovements(movements);
 
-    bot.chat("Système d'auto-saut activé. Je ne resterai plus jamais bloqué !");
+    bot.chat("Système de navigation Pro activé. Je ne resterai plus bloqué !");
     mainLoop();
 });
 
-// AUTO-SAUT RÉFLEXE (Vérifié à chaque tick physique)
+// DÉTECTION DE BLOCAGE PAR VITESSE (ULTRA ROBUSTE)
 bot.on('physicTick', () => {
-    if (!bot.entity.onGround) return;
+    if (!bot.entity || !bot.entity.onGround) return;
 
-    // Calculer la direction du regard pour voir ce qu'il y a devant
-    const yaw = bot.entity.yaw;
-    const dx = -Math.sin(yaw);
-    const dz = -Math.cos(yaw);
-    
-    // Vérifier le bloc juste devant les pieds
-    const blockInFront = bot.blockAt(bot.entity.position.offset(dx * 0.6, 0, dz * 0.6));
-    const blockHeadLevel = bot.blockAt(bot.entity.position.offset(dx * 0.6, 1, dz * 0.6));
+    // Si le bot a un objectif de mouvement mais ne bouge pas
+    if (bot.pathfinder.isMoving()) {
+        if (lastPos && bot.entity.position.distanceTo(lastPos) < 0.02) {
+            stuckTicks++;
+        } else {
+            stuckTicks = 0;
+        }
 
-    if (blockInFront && blockInFront.name !== 'air' && blockInFront.name !== 'water') {
-        // Si un bloc est devant et qu'il y a de l'air au dessus (ou un bloc cassable)
-        bot.setControlState('jump', true);
-        setTimeout(() => bot.setControlState('jump', false), 100);
-        
-        // Si c'est un mur de 2 blocs de haut, on essaie de casser le bloc du haut
-        if (blockHeadLevel && blockHeadLevel.name !== 'air') {
-            const axe = bot.inventory.items().find(i => i.name.includes('_axe'));
-            if (axe) bot.equip(axe, 'hand');
-            bot.dig(blockHeadLevel).catch(() => {});
+        // Si bloqué pendant plus de 10 ticks (0.5s)
+        if (stuckTicks > 10) {
+            // Action de dégagement immédiate
+            bot.setControlState('jump', true);
+            bot.setControlState('forward', true);
+            
+            // Strafe aléatoire pour contourner
+            const dir = Math.random() > 0.5 ? 'left' : 'right';
+            bot.setControlState(dir, true);
+            
+            setTimeout(() => {
+                bot.setControlState('jump', false);
+                bot.setControlState(dir, false);
+            }, 400);
+            
+            stuckTicks = 0;
         }
     }
+    lastPos = bot.entity.position.clone();
 });
 
 bot.on('chat', async (username, message) => {
@@ -76,10 +86,11 @@ bot.on('chat', async (username, message) => {
             try {
                 await bot.pathfinder.goto(new goals.GoalFollow(player.entity, 2));
                 for (const item of bot.inventory.items()) await bot.tossStack(item);
-                bot.chat("C'est fait !");
+                bot.chat("Mission accomplie !");
             } catch (err) {}
         }
         isBusy = false;
+        mainLoop();
     }
 });
 
@@ -90,19 +101,24 @@ async function mainLoop() {
         const tree = bot.findBlock({ matching: logBlockIds, maxDistance: 48 });
 
         if (tree) {
-            console.log(`Cible : ${tree.name}`);
+            console.log(`Cible : ${tree.name} en ${tree.position}`);
+            // GoalGetToBlock est plus robuste que GoalBlock
             await bot.pathfinder.goto(new goals.GoalGetToBlock(tree.position.x, tree.position.y, tree.position.z));
+            
+            // Équiper hache
             const axe = bot.inventory.items().find(i => i.name.includes('_axe'));
             if (axe) await bot.equip(axe, 'hand');
+
             await bot.collectBlock.collect(tree);
         } else {
-            const rx = bot.entity.position.x + (Math.random() * 80 - 40);
-            const rz = bot.entity.position.z + (Math.random() * 80 - 40);
+            // Exploration
+            const rx = bot.entity.position.x + (Math.random() * 60 - 30);
+            const rz = bot.entity.position.z + (Math.random() * 60 - 30);
             await bot.pathfinder.goto(new goals.GoalXZ(rx, rz));
         }
-        setTimeout(mainLoop, 500);
+        setTimeout(mainLoop, 400);
     } catch (e) {
-        setTimeout(mainLoop, 2000);
+        setTimeout(mainLoop, 1500);
     }
 }
 
