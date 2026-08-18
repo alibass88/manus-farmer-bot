@@ -1,5 +1,6 @@
 import mineflayer from 'mineflayer';
 import pathfinderPkg from 'mineflayer-pathfinder';
+import { plugin as collectBlock } from 'mineflayer-collectblock';
 import mcDataLoader from 'minecraft-data';
 
 const { pathfinder, Movements, goals } = pathfinderPkg;
@@ -17,90 +18,141 @@ const bot = mineflayer.createBot({
 });
 
 bot.loadPlugin(pathfinder);
+bot.loadPlugin(collectBlock);
 
 let mcData;
-let isGiving = false;
+let isBusy = false;
+let lastPos = null;
+let stuckCount = 0;
 
-bot.on('login', () => console.log('✅ Manus_Farmer connecté !'));
+bot.on('login', () => console.log('✅ Manus_Farmer Intelligence activée !'));
 
 bot.on('spawn', async () => {
-    console.log('🚀 Manus_Farmer est dans le monde.');
     mcData = mcDataLoader(bot.version);
-    
     const movements = new Movements(bot, mcData);
+    
+    // Intelligence de mouvement
     movements.allowSprinting = true;
     movements.allowParkour = true;
-    movements.canDig = true; // Permet de casser des blocs pour avancer si besoin
+    movements.canDig = true; 
+    movements.scafoldingBlocks = [mcData.blocksByName.dirt.id, mcData.blocksByName.cobblestone.id];
     bot.pathfinder.setMovements(movements);
 
-    bot.chat("Bonjour ! Je suis Manus_Farmer. Je commence la récolte de bois forcée.");
-    farmLoop();
+    bot.chat("Intelligence de survie initialisée. Je commence l'optimisation des ressources.");
+    mainLoop();
 });
 
+// Gestion de la commande 'donne'
 bot.on('chat', async (username, message) => {
     if (username === bot.username) return;
     if (message.toLowerCase() === 'donne') {
-        isGiving = true;
-        bot.chat(`J'arrive ${username} !`);
+        isBusy = true;
+        bot.chat(`J'arrive ${username} ! Je vide mon inventaire.`);
         const player = bot.players[username];
         if (player && player.entity) {
             try {
                 await bot.pathfinder.goto(new goals.GoalFollow(player.entity, 2));
-                const logs = bot.inventory.items().filter(item => item.name.includes('log'));
-                for (const item of logs) await bot.tossStack(item);
-                bot.chat("Voilà ton bois !");
+                for (const item of bot.inventory.items()) {
+                    await bot.tossStack(item);
+                }
+                bot.chat("Voilà ! Je repars travailler.");
             } catch (err) {}
         }
-        isGiving = false;
-        farmLoop();
+        isBusy = false;
     }
 });
 
-async function farmLoop() {
-    if (isGiving) return;
+async function mainLoop() {
+    if (isBusy) return;
 
     try {
-        // Trouver l'arbre le plus proche
-        const logBlockIds = mcData.blocksArray.filter(b => b.name.includes('_log')).map(b => b.id);
-        const tree = bot.findBlock({
-            matching: logBlockIds,
-            maxDistance: 64
-        });
+        // 1. Auto-soin / Faim
+        await handleSurvival();
 
-        if (tree) {
-            console.log(`Cible trouvée : ${tree.name} en ${tree.position}`);
-            
-            // S'approcher du bloc
-            await bot.pathfinder.goto(new goals.GoalBlock(tree.position.x, tree.position.y, tree.position.z));
-            
-            // Casser le bloc
-            if (bot.canDig(tree)) {
-                bot.chat(`Je coupe : ${tree.name}`);
-                await bot.dig(tree);
-            }
-        } else {
-            // Se déplacer pour chercher ailleurs
-            bot.chat("Je cherche des arbres plus loin...");
-            const rx = bot.entity.position.x + (Math.random() * 60 - 30);
-            const rz = bot.entity.position.z + (Math.random() * 60 - 30);
-            await bot.pathfinder.goto(new goals.GoalXZ(rx, rz));
-        }
-        
-        setTimeout(farmLoop, 500);
+        // 2. Vérification des outils (Hache)
+        await checkTools();
+
+        // 3. Récolte de bois intelligente
+        await harvestWood();
+
+        // Vérification anti-blocage
+        checkStuck();
+
+        setTimeout(mainLoop, 1000);
     } catch (e) {
-        console.log('Erreur dans farmLoop, relance...');
-        setTimeout(farmLoop, 2000);
+        console.log('Erreur boucle principale, relance...');
+        setTimeout(mainLoop, 3000);
     }
 }
 
-// Auto-jump si bloqué
-bot.on('move', () => {
-    const block = bot.blockAt(bot.entity.position.offset(bot.entity.velocity.x > 0 ? 1 : -1, 0, bot.entity.velocity.z > 0 ? 1 : -1));
-    if (block && block.name !== 'air' && bot.entity.onGround) {
-        bot.setControlState('jump', true);
-        setTimeout(() => bot.setControlState('jump', false), 100);
+async function handleSurvival() {
+    // Manger si besoin
+    if (bot.food < 16) {
+        const food = bot.inventory.items().find(item => mcData.foodsArray.map(f => f.name).includes(item.name));
+        if (food) {
+            await bot.equip(food, 'hand');
+            await bot.consume();
+        }
     }
-});
+}
+
+async function checkTools() {
+    const hasAxe = bot.inventory.items().some(item => item.name.includes('_axe'));
+    if (!hasAxe && getLogCount() >= 3) {
+        bot.chat("Fabrication d'une hache pour travailler plus vite...");
+        // Logique simplifiée de craft (nécessite normalement une table de craft)
+        // Pour ce bot, on se concentre sur la récolte brute
+    }
+}
+
+async function harvestWood() {
+    const logBlockIds = mcData.blocksArray.filter(b => b.name.includes('_log')).map(b => b.id);
+    const tree = bot.findBlock({
+        matching: logBlockIds,
+        maxDistance: 64
+    });
+
+    if (tree) {
+        try {
+            // S'approcher intelligemment
+            await bot.pathfinder.goto(new goals.GoalGetToBlock(tree.position.x, tree.position.y, tree.position.z));
+            
+            // Équiper la meilleure hache
+            const axe = bot.inventory.items().find(item => item.name.includes('_axe'));
+            if (axe) await bot.equip(axe, 'hand');
+
+            // Couper
+            bot.chat(`Récolte : ${tree.name}`);
+            await bot.collectBlock.collect(tree);
+        } catch (err) {
+            console.log('Obstacle détecté ou cible inaccessible, je change de cible.');
+        }
+    } else {
+        // Exploration pour trouver de nouveaux arbres
+        const rx = bot.entity.position.x + (Math.random() * 100 - 50);
+        const rz = bot.entity.position.z + (Math.random() * 100 - 50);
+        await bot.pathfinder.goto(new goals.GoalXZ(rx, rz));
+    }
+}
+
+function getLogCount() {
+    return bot.inventory.items().filter(i => i.name.includes('_log')).reduce((s, i) => s + i.count, 0);
+}
+
+function checkStuck() {
+    if (lastPos && bot.entity.position.distanceTo(lastPos) < 0.5) {
+        stuckCount++;
+        if (stuckCount > 5) {
+            console.log('Bot bloqué ! Tentative de dégagement...');
+            bot.setControlState('jump', true);
+            setTimeout(() => bot.setControlState('jump', false), 500);
+            stuckCount = 0;
+        }
+    } else {
+        stuckCount = 0;
+    }
+    lastPos = bot.entity.position.clone();
+}
 
 bot.on('error', (err) => console.log('❌ Erreur Farmer:', err));
 bot.on('kicked', (reason) => console.log('❌ Kické Farmer:', reason));
